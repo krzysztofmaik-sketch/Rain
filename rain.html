@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#14181D">
+<title>Rain? — here</title>
+<style>
+  :root{
+    --night:#14181D;
+    --panel:#1C2229;
+    --chalk:#EDE9DF;
+    --chalk-dim:#9BA0A6;
+    --rain:#4FA3E0;          /* the accent: rain blue */
+    --rain-deep:#2E6FA3;
+    --dry:#5BBE6E;
+    --amber:#E8A33D;
+    --heavy:#D9534F;
+    --mono:ui-monospace,'Cascadia Mono','Roboto Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{
+    background:var(--night);color:var(--chalk);
+    font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    min-height:100vh;padding-bottom:48px;
+  }
+  .wrap{max-width:460px;margin:0 auto;padding:0 16px}
+
+  header{
+    padding:20px 0 12px;display:flex;justify-content:space-between;align-items:baseline;
+    border-bottom:1px solid #2A313A;
+  }
+  header h1{font-size:1.05rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+  header h1 span{color:var(--rain)}
+  header .site{font-family:var(--mono);font-size:.7rem;color:var(--chalk-dim);text-align:right;max-width:55%;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  .verdict{
+    margin-top:16px;background:var(--panel);border:1px solid #2A313A;border-radius:14px;
+    padding:18px 18px 16px;position:relative;overflow:hidden;
+  }
+  .verdict::before{content:'';position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--vcol,#555)}
+  .verdict .word{font-size:1.7rem;font-weight:800;letter-spacing:.01em;color:var(--vcol,#888);line-height:1.15}
+  .verdict .why{margin-top:6px;font-size:.88rem;line-height:1.45;color:var(--chalk-dim)}
+  .verdict .now{margin-top:10px;font-family:var(--mono);font-size:.78rem;color:var(--chalk)}
+
+  .card{background:var(--panel);border:1px solid #2A313A;border-radius:14px;padding:14px;margin-top:12px}
+  h2{font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--chalk-dim);margin:16px 0 8px}
+
+  /* 24h probability chart */
+  .chartwrap{position:relative}
+  svg.chart{width:100%;height:150px;display:block}
+  .axis{font-family:var(--mono);font-size:.58rem;fill:var(--chalk-dim)}
+
+  /* daily list */
+  .day{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px dashed #2A313A}
+  .day:last-child{border-bottom:none}
+  .day .nm{flex:0 0 56px;font-size:.8rem;font-weight:600}
+  .day .bar{flex:1;height:10px;border-radius:5px;background:#2A313A;overflow:hidden}
+  .day .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--rain-deep),var(--rain));border-radius:5px}
+  .day .pc{flex:0 0 44px;text-align:right;font-family:var(--mono);font-size:.78rem}
+  .day .mm{flex:0 0 58px;text-align:right;font-family:var(--mono);font-size:.7rem;color:var(--chalk-dim)}
+
+  .status{margin-top:14px;font-family:var(--mono);font-size:.7rem;color:var(--chalk-dim);text-align:center}
+  .status.err{color:var(--heavy)}
+  .foot{margin-top:8px;text-align:center;font-size:.62rem;color:#5A6068}
+  .retry{display:block;margin:10px auto 0;background:var(--rain);border:none;border-radius:10px;color:#fff;
+    font-weight:700;font-size:.82rem;padding:10px 22px;cursor:pointer}
+
+  @media (prefers-reduced-motion:no-preference){
+    .verdict,.card{animation:up .35s ease both}
+    @keyframes up{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Rain<span>?</span></h1>
+    <div class="site" id="place">locating…</div>
+  </header>
+
+  <div class="verdict" id="verdict" style="--vcol:#555">
+    <div class="word" id="vword">—</div>
+    <div class="why" id="vwhy">Getting your location…</div>
+    <div class="now" id="vnow"></div>
+  </div>
+
+  <h2>Rain probability · next 24 h</h2>
+  <div class="card chartwrap">
+    <svg class="chart" id="chart" viewBox="0 0 400 150" preserveAspectRatio="none"></svg>
+  </div>
+
+  <h2>Week ahead</h2>
+  <div class="card" id="week"></div>
+
+  <div class="status" id="status"></div>
+  <div class="foot">Forecast: Open-Meteo · Location is used on your phone only, never stored anywhere</div>
+</div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const FALLBACK = { lat: 51.889, lon: -0.519, name: 'Luton (default)' };   // used only if location denied
+
+async function start(){
+  $('status').textContent = 'Updating…'; $('status').className='status';
+  let loc;
+  try{ loc = await getLocation(); }
+  catch(e){
+    loc = FALLBACK;
+    $('status').textContent = 'Location unavailable — showing Luton. Allow location and reopen for local forecast.';
+    $('status').className = 'status err';
+  }
+  $('place').textContent = loc.name || (loc.lat.toFixed(2)+', '+loc.lon.toFixed(2));
+  try{
+    const wx = await fetchWx(loc.lat, loc.lon);
+    render(wx);
+    if(!$('status').classList.contains('err'))
+      $('status').textContent = 'Updated '+new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+  }catch(e){
+    $('vwhy').textContent = 'Could not reach the forecast service. Check connection and reopen.';
+    $('status').textContent = 'Forecast fetch failed.'; $('status').className='status err';
+  }
+}
+
+function getLocation(){
+  return new Promise((res, rej)=>{
+    if(!navigator.geolocation) return rej();
+    navigator.geolocation.getCurrentPosition(
+      async p=>{
+        const lat = p.coords.latitude, lon = p.coords.longitude;
+        let name = '';
+        try{
+          const g = await (await fetch(
+            `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`)).json();
+          name = g.locality || g.city || g.principalSubdivision || '';
+        }catch(e){}
+        res({lat, lon, name});
+      },
+      ()=>rej(),
+      { enableHighAccuracy:false, timeout:10000, maximumAge:0 }
+    );
+  });
+}
+
+async function fetchWx(lat, lon){
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}`+
+    `&hourly=precipitation_probability,precipitation,weather_code`+
+    `&daily=precipitation_probability_max,precipitation_sum,weather_code`+
+    `&current=precipitation,weather_code,temperature_2m`+
+    `&timezone=auto&forecast_days=7`;
+  const r = await fetch(url);
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return r.json();
+}
+
+/* ---------------- render ---------------- */
+function render(wx){
+  const H = wx.hourly, now = new Date();
+  /* index of current hour */
+  let i0 = H.time.findIndex(t => new Date(t) > now) - 1;
+  if(i0 < 0) i0 = 0;
+  const idx24 = []; for(let k=i0;k<Math.min(i0+24,H.time.length);k++) idx24.push(k);
+
+  /* verdict: when does rain start/stop? */
+  const raining = (wx.current.precipitation||0) > 0.05 || isWet(wx.current.weather_code);
+  const v = $('verdict'); let word, col, why;
+  if(raining){
+    const stop = idx24.find(k => (H.precipitation_probability[k]||0) < 30 && (H.precipitation[k]||0) < 0.1);
+    word='RAINING NOW'; col='var(--rain)';
+    why = stop !== undefined ? 'Should ease around '+hh(H.time[stop])+'.' : 'Set in for the next 24 hours.';
+  } else {
+    const start = idx24.find(k => (H.precipitation_probability[k]||0) >= 50 || (H.precipitation[k]||0) >= 0.2);
+    if(start === undefined){
+      word='DRY ALL DAY'; col='var(--dry)';
+      const pmax = Math.max(...idx24.map(k=>H.precipitation_probability[k]||0));
+      why = 'No rain expected in the next 24 h (peak chance '+pmax+'%).';
+    } else {
+      const t = hh(H.time[start]);
+      const soon = start - i0 <= 3;
+      word = 'RAIN ~ '+t; col = soon ? 'var(--amber)' : 'var(--rain)';
+      why = (soon?'Coming soon — ':'Dry for now. ')+(H.precipitation_probability[start])+'% chance from '+t+
+            (H.precipitation[start]>=1 ? ', could be heavy.' : '.');
+    }
+  }
+  v.style.setProperty('--vcol', col);
+  $('vword').textContent = word;
+  $('vwhy').textContent = why;
+  $('vnow').textContent = 'Now  '+Math.round(wx.current.temperature_2m)+'°C · '+desc(wx.current.weather_code);
+
+  drawChart(idx24.map(k=>({ t:H.time[k], p:H.precipitation_probability[k]||0, mm:H.precipitation[k]||0 })));
+
+  /* week */
+  const D = wx.daily;
+  $('week').innerHTML = D.time.map((d,k)=>{
+    const nm = k===0 ? 'Today' : new Date(d+'T12:00').toLocaleDateString('en-GB',{weekday:'short'});
+    const p = D.precipitation_probability_max[k]||0, mm = D.precipitation_sum[k]||0;
+    return `<div class="day"><span class="nm">${nm}</span>
+      <span class="bar"><i style="width:${p}%"></i></span>
+      <span class="pc">${p}%</span><span class="mm">${mm?mm.toFixed(1)+' mm':'—'}</span></div>`;
+  }).join('');
+}
+
+function drawChart(rows){
+  const W=400, Ht=150, top=14, bot=22, ih=Ht-top-bot;
+  const x = k => k/(rows.length-1)*W;
+  const y = p => top + ih - (p/100)*ih;
+  let area = `M0,${Ht-bot} `, line = '';
+  rows.forEach((r,k)=>{ const X=x(k),Y=y(r.p); area += `L${X},${Y} `; line += (k?'L':'M')+`${X},${Y} `; });
+  area += `L${W},${Ht-bot} Z`;
+  let s = `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="var(--rain)" stop-opacity=".55"/>
+    <stop offset="1" stop-color="var(--rain)" stop-opacity=".05"/></linearGradient></defs>`;
+  [25,50,75].forEach(p=> s += `<line x1="0" x2="${W}" y1="${y(p)}" y2="${y(p)}" stroke="#2A313A" stroke-width="1" stroke-dasharray="3 5"/>`);
+  s += `<path d="${area}" fill="url(#g)"/><path d="${line}" fill="none" stroke="var(--rain)" stroke-width="2.5" stroke-linejoin="round"/>`;
+  rows.forEach((r,k)=>{ if(r.mm>=0.2){ const X=x(k);
+      s += `<rect x="${X-2}" y="${Ht-bot+4}" width="4" height="${Math.min(12,3+r.mm*3)}" rx="2" fill="var(--rain-deep)"/>`; }});
+  for(let k=0;k<rows.length;k+=4)
+    s += `<text class="axis" x="${x(k)}" y="${Ht-6}" text-anchor="middle">${hh(rows[k].t)}</text>`;
+  s += `<text class="axis" x="4" y="${y(50)-4}">50%</text>`;
+  $('chart').innerHTML = s;
+}
+
+function hh(t){ return t.slice(11,13)+':00'; }
+function isWet(c){ return (c>=51&&c<=67)||(c>=80&&c<=82)||c===95||c===96||c===99||(c>=71&&c<=77)||c===85||c===86; }
+function desc(c){
+  const m = {0:'Clear',1:'Mostly clear',2:'Partly cloudy',3:'Overcast',45:'Fog',48:'Freezing fog',
+    51:'Light drizzle',53:'Drizzle',55:'Heavy drizzle',61:'Light rain',63:'Rain',65:'Heavy rain',
+    66:'Freezing rain',67:'Freezing rain',71:'Light snow',73:'Snow',75:'Heavy snow',77:'Snow grains',
+    80:'Light showers',81:'Showers',82:'Heavy showers',85:'Snow showers',86:'Snow showers',
+    95:'Thunderstorm',96:'Thunderstorm + hail',99:'Thunderstorm + hail'};
+  return m[c] || '—';
+}
+
+start();
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) start(); });
+</script>
+</body>
+</html>
